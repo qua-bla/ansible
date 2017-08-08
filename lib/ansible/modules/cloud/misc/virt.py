@@ -129,10 +129,6 @@ from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils._text import to_native
 
 
-VIRT_FAILED = 1
-VIRT_SUCCESS = 0
-VIRT_UNAVAILABLE = 2
-
 ALL_COMMANDS = []
 VM_COMMANDS = [
     'create', 'status', 'start', 'stop', 'pause', 'unpause',
@@ -466,7 +462,7 @@ def core(module):
         res = v.list_vms(state=state)
         if not isinstance(res, dict):
             res = {command: res}
-        return VIRT_SUCCESS, res
+        return res
 
     if state:
         if not guest:
@@ -494,7 +490,7 @@ def core(module):
         else:
             module.fail_json(msg="unexpected state")
 
-        return VIRT_SUCCESS, res
+        return res
 
     if autostart is not None and v.autostart(guest, autostart):
         res['changed'] = True
@@ -511,17 +507,17 @@ def core(module):
                 except VMNotFound:
                     v.define(xml)
                     res = {'changed': True, 'created': guest}
-                return VIRT_SUCCESS, res
+                return res
             res = getattr(v, command)(guest)
             if not isinstance(res, dict):
                 res = {command: res}
-            return VIRT_SUCCESS, res
+            return res
 
         elif hasattr(v, command):
             res = getattr(v, command)()
             if not isinstance(res, dict):
                 res = {command: res}
-            return VIRT_SUCCESS, res
+            return res
 
         else:
             module.fail_json(msg="Command %s not recognized" % command)
@@ -545,17 +541,12 @@ def main():
             msg='The libvirt module is not importable. Check the requirements.'
         )
 
-    rc = VIRT_SUCCESS
     try:
-        rc, result = core(module)
+        result = core(module)
     except Exception as e:
         module.fail_json(msg=to_native(e), exception=traceback.format_exc())
 
-    if rc != 0:
-        # something went wrong emit the msg
-        module.fail_json(rc=rc, msg=result)
-    else:
-        module.exit_json(**result)
+    module.exit_json(**result)
 
 
 if __name__ == '__main__':

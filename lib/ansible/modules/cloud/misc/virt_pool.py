@@ -163,10 +163,6 @@ else:
 from ansible.module_utils.basic import AnsibleModule
 
 
-VIRT_FAILED = 1
-VIRT_SUCCESS = 0
-VIRT_UNAVAILABLE = 2
-
 ALL_COMMANDS = []
 ENTRY_COMMANDS = [
     'create', 'status', 'start', 'stop', 'build', 'delete',
@@ -573,7 +569,7 @@ def core(module):
         res = v.list_pools(state=state)
         if not isinstance(res, dict):
             res = {command: res}
-        return VIRT_SUCCESS, res
+        return res
 
     if state:
         if not name:
@@ -618,7 +614,7 @@ def core(module):
         else:
             module.fail_json(msg="unexpected state")
 
-        return VIRT_SUCCESS, res
+        return res
 
     if command:
         if command in ENTRY_COMMANDS:
@@ -632,27 +628,27 @@ def core(module):
                 except EntryNotFound:
                     v.define(name, xml)
                     res = {'changed': True, 'created': name}
-                return VIRT_SUCCESS, res
+                return res
             elif command == 'build':
                 res = v.build(name, mode)
                 if not isinstance(res, dict):
                     res = {'changed': True, command: res}
-                return VIRT_SUCCESS, res
+                return res
             elif command == 'delete':
                 res = v.delete(name, mode)
                 if not isinstance(res, dict):
                     res = {'changed': True, command: res}
-                return VIRT_SUCCESS, res
+                return res
             res = getattr(v, command)(name)
             if not isinstance(res, dict):
                 res = {command: res}
-            return VIRT_SUCCESS, res
+            return res
 
         elif hasattr(v, command):
             res = getattr(v, command)()
             if not isinstance(res, dict):
                 res = {command: res}
-            return VIRT_SUCCESS, res
+            return res
 
         else:
             module.fail_json(msg="Command %s not recognized" % command)
@@ -671,7 +667,7 @@ def core(module):
                 res['changed'] = True
                 res['msg'] = v.set_autostart(name, False)
 
-        return VIRT_SUCCESS, res
+        return res
 
     module.fail_json(msg="expected state or command parameter to be specified")
 
@@ -703,17 +699,12 @@ def main():
             msg='The `lxml` module is not importable. Check the requirements.'
         )
 
-    rc = VIRT_SUCCESS
     try:
-        rc, result = core(module)
+        result = core(module)
     except Exception as e:
         module.fail_json(msg=str(e))
 
-    if rc != 0:
-        # something went wrong emit the msg
-        module.fail_json(rc=rc, msg=result)
-    else:
-        module.exit_json(**result)
+    module.exit_json(**result)
 
 
 if __name__ == '__main__':
