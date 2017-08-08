@@ -103,10 +103,15 @@ EXAMPLES = '''
 '''
 
 import json
-import requests
-import urllib
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.six.moves.urllib import parse as urllib_parse
 
 
 def main():
@@ -127,6 +132,9 @@ def main():
         supports_check_mode = True
     )
 
+    if not HAS_REQUESTS:
+        module.fail_json(msg="requests library is required for this module. To install, use `pip install requests`")
+
     if module.params['destination_type'] == "queue":
         dest_type="q"
     else:
@@ -135,15 +143,15 @@ def main():
     if module.params['routing_key'] == "":
         props = "~"
     else:
-        props = urllib.quote(module.params['routing_key'],'')
+        props = urllib_parse.quote(module.params['routing_key'],'')
 
     url = "http://%s:%s/api/bindings/%s/e/%s/%s/%s/%s" % (
         module.params['login_host'],
         module.params['login_port'],
-        urllib.quote(module.params['vhost'],''),
-        urllib.quote(module.params['name'],''),
+        urllib_parse.quote(module.params['vhost'],''),
+        urllib_parse.quote(module.params['name'],''),
         dest_type,
-        urllib.quote(module.params['destination'],''),
+        urllib_parse.quote(module.params['destination'],''),
         props
     )
 
@@ -182,10 +190,10 @@ def main():
             url = "http://%s:%s/api/bindings/%s/e/%s/%s/%s" % (
                 module.params['login_host'],
                 module.params['login_port'],
-                urllib.quote(module.params['vhost'],''),
-                urllib.quote(module.params['name'],''),
+                urllib_parse.quote(module.params['vhost'],''),
+                urllib_parse.quote(module.params['name'],''),
                 dest_type,
-                urllib.quote(module.params['destination'],'')
+                urllib_parse.quote(module.params['destination'],'')
             )
 
             r = requests.post(

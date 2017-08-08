@@ -19,7 +19,6 @@ lib/ansible/modules/cloud/amazon/ec2_ami_find.py
 lib/ansible/modules/cloud/amazon/ec2_eip.py
 lib/ansible/modules/cloud/amazon/ec2_eni_facts.py
 lib/ansible/modules/cloud/amazon/ec2_key.py
-lib/ansible/modules/cloud/amazon/ec2_lc.py
 lib/ansible/modules/cloud/amazon/ec2_lc_facts.py
 lib/ansible/modules/cloud/amazon/ec2_metric_alarm.py
 lib/ansible/modules/cloud/amazon/ec2_scaling_policy.py
@@ -42,7 +41,6 @@ lib/ansible/modules/cloud/amazon/ecs_service_facts.py
 lib/ansible/modules/cloud/amazon/ecs_task.py
 lib/ansible/modules/cloud/amazon/ecs_taskdefinition.py
 lib/ansible/modules/cloud/amazon/efs.py
-lib/ansible/modules/cloud/amazon/elasticache.py
 lib/ansible/modules/cloud/amazon/elasticache_subnet_group.py
 lib/ansible/modules/cloud/amazon/elb_instance.py
 lib/ansible/modules/cloud/amazon/elb_classic_lb_facts.py
@@ -80,13 +78,12 @@ lib/ansible/modules/cloud/centurylink/clc_loadbalancer.py
 lib/ansible/modules/cloud/cloudscale/cloudscale_server.py
 lib/ansible/modules/cloud/cloudstack/cs_instance.py
 lib/ansible/modules/cloud/cloudstack/cs_instance_facts.py
-lib/ansible/modules/cloud/cloudstack/cs_nic.py
+lib/ansible/modules/cloud/cloudstack/_cs_nic.py
 lib/ansible/modules/cloud/cloudstack/cs_portforward.py
 lib/ansible/modules/cloud/cloudstack/cs_securitygroup.py
 lib/ansible/modules/cloud/cloudstack/cs_securitygroup_rule.py
 lib/ansible/modules/cloud/cloudstack/cs_snapshot_policy.py
 lib/ansible/modules/cloud/cloudstack/cs_template.py
-lib/ansible/modules/cloud/cloudstack/cs_vmsnapshot.py
 lib/ansible/modules/cloud/cloudstack/cs_volume.py
 lib/ansible/modules/cloud/docker/_docker.py
 lib/ansible/modules/cloud/docker/docker_container.py
@@ -179,7 +176,6 @@ lib/ansible/modules/cloud/univention/udm_user.py
 lib/ansible/modules/cloud/vmware/vca_fw.py
 lib/ansible/modules/cloud/vmware/vca_nat.py
 lib/ansible/modules/cloud/vmware/vca_vapp.py
-lib/ansible/modules/cloud/vmware/vmware_cluster.py
 lib/ansible/modules/cloud/vmware/vmware_dvswitch.py
 lib/ansible/modules/cloud/vmware/vmware_local_user_manager.py
 lib/ansible/modules/cloud/vmware/vmware_migrate_vmk.py
@@ -195,7 +191,6 @@ lib/ansible/modules/clustering/consul_kv.py
 lib/ansible/modules/clustering/consul_session.py
 lib/ansible/modules/clustering/kubernetes.py
 lib/ansible/modules/clustering/pacemaker_cluster.py
-lib/ansible/modules/commands/command.py
 lib/ansible/modules/database/misc/elasticsearch_plugin.py
 lib/ansible/modules/database/misc/kibana_plugin.py
 lib/ansible/modules/database/misc/redis.py
@@ -218,7 +213,6 @@ lib/ansible/modules/files/archive.py
 lib/ansible/modules/files/assemble.py
 lib/ansible/modules/files/blockinfile.py
 lib/ansible/modules/files/ini_file.py
-lib/ansible/modules/files/iso_extract.py
 lib/ansible/modules/files/replace.py
 lib/ansible/modules/files/synchronize.py
 lib/ansible/modules/files/tempfile.py
@@ -270,7 +264,6 @@ lib/ansible/modules/network/aos/aos_template.py
 lib/ansible/modules/network/asa/asa_acl.py
 lib/ansible/modules/network/asa/asa_command.py
 lib/ansible/modules/network/asa/asa_config.py
-lib/ansible/modules/net_tools/basics/uri.py
 lib/ansible/modules/network/bigswitch/bigmon_chain.py
 lib/ansible/modules/network/bigswitch/bigmon_policy.py
 lib/ansible/modules/network/citrix/netscaler.py
@@ -348,7 +341,6 @@ lib/ansible/modules/network/nxos/nxos_udld.py
 lib/ansible/modules/network/nxos/nxos_udld_interface.py
 lib/ansible/modules/network/nxos/nxos_user.py
 lib/ansible/modules/network/nxos/nxos_vrf.py
-lib/ansible/modules/network/nxos/nxos_vrf_interface.py
 lib/ansible/modules/network/nxos/nxos_vtp_domain.py
 lib/ansible/modules/network/nxos/nxos_vtp_password.py
 lib/ansible/modules/network/nxos/nxos_vtp_version.py
@@ -432,9 +424,6 @@ lib/ansible/modules/packaging/os/zypper.py
 lib/ansible/modules/packaging/os/zypper_repository.py
 lib/ansible/modules/remote_management/foreman/foreman.py
 lib/ansible/modules/remote_management/foreman/katello.py
-lib/ansible/modules/remote_management/hpilo/hpilo_boot.py
-lib/ansible/modules/remote_management/hpilo/hpilo_facts.py
-lib/ansible/modules/remote_management/hpilo/hponcfg.py
 lib/ansible/modules/remote_management/stacki/stacki_host.py
 lib/ansible/modules/source_control/bzr.py
 lib/ansible/modules/source_control/hg.py
@@ -487,7 +476,6 @@ lib/ansible/modules/system/pam_limits.py
 lib/ansible/modules/system/puppet.py
 lib/ansible/modules/system/runit.py
 lib/ansible/modules/system/seboolean.py
-lib/ansible/modules/system/sefcontext.py
 lib/ansible/modules/system/seport.py
 lib/ansible/modules/system/service.py
 lib/ansible/modules/system/solaris_zone.py

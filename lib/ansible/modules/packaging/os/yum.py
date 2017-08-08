@@ -126,6 +126,13 @@ options:
     default: "/"
     aliases: []
 
+  security:
+    description:
+      - If set to C(yes), and C(state=latest) then only installs updates that have been marked security related.
+    default: "no"
+    choices: ["yes", "no"]
+    version_added: "2.4"
+
 notes:
   - When used with a loop of package names in a playbook, ansible optimizes
     the call to the yum module.  Instead of calling the module with a single
@@ -155,6 +162,7 @@ author:
     - "Seth Vidal"
     - "Eduard Snesarev (github.com/verm666)"
     - "Berend De Schouwer (github.com/berenddeschouwer)"
+    - "Abhijeet Kasurde (github.com/akasurde)"
 '''
 
 EXAMPLES = '''
@@ -290,24 +298,23 @@ def ensure_yum_utils(module):
 
 def fetch_rpm_from_url(spec, module=None):
     # download package so that we can query it
-    tempdir = tempfile.mkdtemp()
-    package = os.path.join(tempdir, str(spec.rsplit('/', 1)[1]))
+    package_name, _ = os.path.splitext(str(spec.rsplit('/', 1)[1]))
+    package_file = tempfile.NamedTemporaryFile(prefix=package_name, suffix='.rpm', delete=False)
+    module.add_cleanup_file(package_file.name)
     try:
         rsp, info = fetch_url(module, spec)
         if not rsp:
             module.fail_json(msg="Failure downloading %s, %s" % (spec, info['msg']))
-        f = open(package, 'w')
         data = rsp.read(BUFSIZE)
         while data:
-            f.write(data)
+            package_file.write(data)
             data = rsp.read(BUFSIZE)
-        f.close()
+        package_file.close()
     except Exception:
         e = get_exception()
-        shutil.rmtree(tempdir)
         if module:
             module.fail_json(msg="Failure downloading %s, %s" % (spec, e))
-    return package
+    return package_file.name
 
 def po_to_nevra(po):
 
@@ -477,13 +484,6 @@ def what_provides(module, repoq, req_spec, conf_file, qf=def_qf, en_repos=None, 
         en_repos = []
     if dis_repos is None:
         dis_repos = []
-
-    if req_spec.endswith('.rpm') and '://' not in req_spec:
-        return req_spec
-
-    elif '://' in req_spec:
-        local_path = fetch_rpm_from_url(req_spec, module=module)
-        return local_path
 
     if not repoq:
 
@@ -655,7 +655,6 @@ def install(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, i
     res['msg'] = ''
     res['rc'] = 0
     res['changed'] = False
-    tempdir = tempfile.mkdtemp()
 
     for spec in items:
         pkg = None
@@ -754,13 +753,6 @@ def install(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, i
         cmd = yum_basecmd + ['install'] + pkgs
 
         if module.check_mode:
-            # Remove rpms downloaded for EL5 via url
-            try:
-                shutil.rmtree(tempdir)
-            except Exception:
-                e = get_exception()
-                module.fail_json(msg="Failure deleting temp directory %s, %s" % (tempdir, e))
-
             module.exit_json(changed=True, results=res['results'], changes=dict(installed=pkgs))
 
         changed = True
@@ -793,13 +785,6 @@ def install(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, i
 
         # Record change
         res['changed'] = changed
-
-    # Remove rpms downloaded for EL5 via url
-    try:
-        shutil.rmtree(tempdir)
-    except Exception:
-        e = get_exception()
-        module.fail_json(msg="Failure deleting temp directory %s, %s" % (tempdir, e))
 
     return res
 
@@ -948,6 +933,35 @@ def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, in
                 pkgs['update'].append(spec)
                 will_update.add(spec)
                 continue
+
+            # check if pkgspec is installed (if possible for idempotence)
+            # localpkg
+            elif spec.endswith('.rpm') and '://' not in spec:
+                if not os.path.exists(spec):
+                    res['msg'] += "No RPM file matching '%s' found on system" % spec
+                    res['results'].append("No RPM file matching '%s' found on system" % spec)
+                    res['rc'] = 127 # Ensure the task fails in with-loop
+                    module.fail_json(**res)
+
+                # get the pkg name-v-r.arch
+                nvra = local_nvra(module, spec)
+
+                # local rpm files can't be updated
+                if not is_installed(module, repoq, nvra, conf_file, en_repos=en_repos, dis_repos=dis_repos, installroot=installroot):
+                    pkgs['install'].append(spec)
+                continue
+
+            # URL
+            elif '://' in spec:
+                # download package so that we can check if it's already installed
+                package = fetch_rpm_from_url(spec, module=module)
+                nvra = local_nvra(module, package)
+
+                # local rpm files can't be updated
+                if not is_installed(module, repoq, nvra, conf_file, en_repos=en_repos, dis_repos=dis_repos, installroot=installroot):
+                    pkgs['install'].append(package)
+                continue
+
             # dep/pkgname  - find it
             else:
                 if is_installed(module, repoq, spec, conf_file, en_repos=en_repos, dis_repos=dis_repos, installroot=installroot):
@@ -1054,7 +1068,7 @@ def latest(module, items, repoq, yum_basecmd, conf_file, en_repos, dis_repos, in
     return res
 
 def ensure(module, state, pkgs, conf_file, enablerepo, disablerepo,
-           disable_gpg_check, exclude, repoq, skip_broken, installroot='/'):
+           disable_gpg_check, exclude, repoq, skip_broken, security, installroot='/'):
 
     # fedora will redirect yum to dnf, which has incompatibilities
     # with how this module expects yum to operate. If yum-deprecated
@@ -1156,6 +1170,8 @@ def ensure(module, state, pkgs, conf_file, enablerepo, disablerepo,
     elif state == 'latest':
         if disable_gpg_check:
             yum_basecmd.append('--nogpgcheck')
+        if security:
+            yum_basecmd.append('--security')
         res = latest(module, pkgs, repoq, yum_basecmd, conf_file, en_repos, dis_repos, installroot=installroot)
     else:
         # should be caught by AnsibleModule argument_spec
@@ -1196,6 +1212,7 @@ def main():
             installroot=dict(required=False, default="/", type='str'),
             # this should not be needed, but exists as a failsafe
             install_repoquery=dict(required=False, default="yes", type='bool'),
+            security=dict(default="no", type='bool'),
         ),
         required_one_of=[['name', 'list']],
         mutually_exclusive=[['name', 'list']],
@@ -1250,9 +1267,10 @@ def main():
         disablerepo = params.get('disablerepo', '')
         disable_gpg_check = params['disable_gpg_check']
         skip_broken = params['skip_broken']
+        security = params['security']
         results = ensure(module, state, pkg, params['conf_file'], enablerepo,
                          disablerepo, disable_gpg_check, exclude, repoquery,
-                         skip_broken, params['installroot'])
+                         skip_broken, security, params['installroot'])
         if repoquery:
             results['msg'] = '%s %s' % (results.get('msg', ''),
                     'Warning: Due to potential bad behaviour with rhnplugin and certificates, used slower repoquery calls instead of Yum API.')

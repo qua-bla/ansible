@@ -510,7 +510,7 @@ files:
   $modules/packaging/language/cpanm.py:
   $modules/packaging/language/easy_install.py: mattupstate
   $modules/packaging/language/gem.py: $team_ansible
-  $modules/packaging/language/maven_artifact.py: chrisisbeef
+  $modules/packaging/language/maven_artifact.py: chrisisbeef tumbl3w33d
   $modules/packaging/language/npm.py:
     ignored: chrishoffman
     maintainers: shane-walker
@@ -562,8 +562,9 @@ files:
   $modules/packaging/os/zypper_repository.py: matze robinro
   $modules/remote_management/foreman/: ehelms
   $modules/remote_management/hpilo/: dagwieers haad
-  $modules/remote_management/imc/imc_xml.py: dagwieers
+  $modules/remote_management/imc/: dagwieers
   $modules/remote_management/ipmi/: cloudnull
+  $modules/remote_management/manageiq/ : $team_manageiq
   $modules/remote_management/stacki/stacki_host.py: bbyhuy bsanders
   $modules/remote_management/wakeonlan.py: dagwieers
   $modules/source_control/bzr.py: andreparames
@@ -832,6 +833,16 @@ files:
   contrib/inventory/openstack.py:
     keywords:
     - openstack dynamic inventory script
+  contrib/inventory/linode.py:
+    keywords:
+    - linode dynamic inventory script
+    maintainers:
+    - intheclouddan rwaweber zbal
+  contrib/inventory/azure_rm.py:
+    keywords:
+    - azure azure_rm dynamic inventory script
+    maintainers:
+    - $team_azure
   lib/ansible/inventory:
     keywords:
     - core inventory
@@ -873,6 +884,8 @@ files:
   $module_utils/cnos.py:
     maintainers: dkasberg
     labels: networking
+  $module_utils/crypto.py:
+    maintainers: Spredzy
   $module_utils/dellos:
     maintainers: skg-net
     labels: networking
@@ -894,6 +907,8 @@ files:
   $module_utils/junos.py:
     maintainers: $team_networking
     labels: networking
+  $module_utils/manageiq.py:
+    maintainers: $team_manageiq
   $module_utils/netcfg.py:
     maintainers: $team_networking
     labels: networking
@@ -1038,6 +1053,7 @@ macros:
   team_avi: ericsysmin grastogi23 khaltore
   team_azure: haroldwongms nitzmahone tstringer
   team_cumulus: isharacomix jrrivers privateip
+  team_manageiq: gtanzillo abellotti zgalor yaacov
   team_netapp: hulquest lmprice timuster
   team_netscaler: chiradeep giorgos-nikolopoulos
   team_netvisor: Qalthos amitsi gundalow privateip

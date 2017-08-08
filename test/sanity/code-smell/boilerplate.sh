@@ -3,6 +3,7 @@
 metaclass1=$(find ./bin -type f -exec grep -HL '__metaclass__ = type' '{}' '+')
 future1=$(find ./bin -type f -exec grep -HL 'from __future__ import (absolute_import, division, print_function)' '{}' '+')
 
+# We eventually want to remove the module_utils and modules pruning from metaclass2 and future2
 metaclass2=$(find ./lib/ansible -path ./lib/ansible/modules -prune \
         -o -path ./lib/ansible/module_utils -prune \
         -o -path ./lib/ansible/module_utils/six/_six.py -prune \
@@ -19,8 +20,6 @@ future2=$(find ./lib/ansible -path ./lib/ansible/modules -prune \
 
 # Eventually we want metaclass3 and future3 to get down to 0
 metaclass3=$(find ./lib/ansible/modules -path ./lib/ansible/modules/windows -prune \
-        -o -path ./lib/ansible/modules/files -prune \
-        -o -path ./lib/ansible/modules/database/proxysql -prune \
         -o -path ./lib/ansible/modules/cloud/ovirt -prune \
         -o -path ./lib/ansible/modules/cloud/openstack -prune \
         -o -path ./lib/ansible/modules/cloud/cloudstack -prune \
@@ -41,8 +40,6 @@ metaclass3=$(find ./lib/ansible/modules -path ./lib/ansible/modules/windows -pru
         -o -name '*.py' -type f -size +0c -exec grep -HL '__metaclass__ = type' '{}' '+')
 
 future3=$(find ./lib/ansible/modules -path ./lib/ansible/modules/windows -prune \
-        -o -path ./lib/ansible/modules/files -prune \
-        -o -path ./lib/ansible/modules/database/proxysql -prune \
         -o -path ./lib/ansible/modules/cloud/ovirt -prune \
         -o -path ./lib/ansible/modules/cloud/openstack -prune \
         -o -path ./lib/ansible/modules/cloud/cloudstack -prune \
@@ -62,34 +59,10 @@ future3=$(find ./lib/ansible/modules -path ./lib/ansible/modules/windows -prune 
         -o -path ./lib/ansible/modules/network/vyos -prune \
         -o -name '*.py' -type f -size +0c -exec egrep -HL 'from __future__ import (?absolute_import, division, print_function)?' '{}' '+')
 
-# Ordered by approximate work, lowest to highest
-# Key:
-#     [*]: import * fixes
-#     [!]: many get_exception fixes
-#     [i]: a few get_exception fixes
-# (everything below needs boilerplate added)
-# Priorities: import*, get_exception, then boilerplate-only
-#
-# database/proxysql [!]
-# network/ios
-# network/eos [i]
-# network/netvisor
-# network/aos [!]
-# network/vyos [i]
-# network/lenovo
-# network/panos [!]
-# network/junos [i]
-# files [!]
-# network/avi
-# network/f5 [*][i]
-# monitoring [*][!]
-# packaging/os [*][i]
-# cloud/cloudstack [*]
-# cloud/openstack [*]
-# cloud/ovirt
-# network/cloudengine [i]
-# network/nxos [*][i]
-# cloud/amazon [*]
+###
+### Important: If you're looking for a list of files to cleanup for boilerplate 
+### Look at this wikipage instead: https://github.com/ansible/community/wiki/Testing:-boilerplate,-wildcard-imports,-and-get_exception
+###
 
 ### TODO:
 ### - module_utils  <=== these are important but not well organized so we'd
