@@ -78,103 +78,105 @@ from ansible.module_utils.basic import AnsibleModule
 import libvirt
 from lxml import etree
 
-def x_list(element):
-    if type(element) is str:
-        return [element]
-    else:
-        return element
-
-def x_elem(parent, element):
-    element = x_list(element)
-
-    for tag in element:
-        elem = parent.find(tag)
-        if elem is None:
-            elem = etree.SubElement(parent, tag)
-        parent = elem
-        
-    return parent
-
-def x_get(parent, element, unit=False):
-    element = x_list(element)
-
-    e = xml.xpath('/'.join(element))
-    
-    if e is None:
-        return None
-    
-    if unit:
-        return virt.Memory(e.text, e.get('unit', 'B'))
-        
-    return e
-
-def x_set(parent, element, value):
-    e = x_elem(parent, element)
-    
-    if isinstance(value, virt.Memory):
-        e.text = str(value.size)
-        e.set('unit', value.unit)
-    else:
-        e.text = str(value)
-    
-    return e
-
-def x_default(parent, element, value):
-    element = x_list(element)
-
-    if not parent.xpath('/'.join(element)):
-        x_set(parent, element, value)
+from ansible.module_utils.virt import x_set, x_elem, x_default, x_get
 
 def update_xml(xml, params):
-    
-    xml.set('type', params['type'])
+
+    if params['name']:
+        x_set(xml, 'name', params['name'])
+
+    if params['title']:
+        x_set(xml, 'title', params['title'])
+
+    if not params['uuid']:
+        # default is to remove uuid
+        for e in xml.xpath('uuid'):
+            xml.remove(e)
+    elif params['uuid'] != 'FROM_XML':
+        x_set(xml, 'uuid', params['uuid'])
+
+    if params['type']:
+        xml.set('type', params['type'])
+
+    if params['memory']:
+        x_set(xml, 'currentMemory', virt.Memory(params['memory']))
+
+    if params['max_memory']:
+        x_set(xml, 'memory', virt.Memory(params['max_memory']))
 
     if params['cpus']:
+        # libvirt errors if vcpu.text (i.e. max. cpus) is missing
         x_default(xml, 'vcpu', params['cpus'])
         x_elem(xml, 'vcpu').set('current', str(params['cpus']))
 
     if params['max_cpus']:
         x_set(xml, 'vcpu', params['max_cpus'])
 
-    if params['memory']:
-        x_set(xml, 'currentMemory', virt.Memory(params['memory']))
-    
-    if params['max_memory']:
-        x_set(xml, 'memory', virt.Memory(params['max_memory']))
-    
     x_default(xml, ['os', 'type'], 'hvm')
 
 def core(module):
 
-    xml = etree.fromstring(module.params['xml'])
-    
-    update_xml(xml, module.params)
-       
+    params = module.params
+
+    xml = etree.fromstring(params['xml'])
+    update_xml(xml, params)
     xmlstr = etree.tostring(xml)
+    conn = libvirt.open(params['hypervisor_uri'])
+
+    vm = None
+    if x_get(xml, 'uuid'):
+        try:
+            vm = conn.lookupByUUIDString(x_get(xml, 'uuid'))
+        except libvirt.libvirtError:
+            pass
+    elif x_get(xml, 'name'):
+        try:
+            vm = conn.lookupByName(x_get(xml, 'name'))
+        except libvirt.libvirtError:
+            pass
     
-    #conn = libvirt.open()
-    #conn.createXML(xmlstr)
+    if not vm:
+        if params['status'] == 'defined':
+            conn.defineXML(xmlstr)
+        elif params['status'] == 'transient':
+            conn.createXML(xmlstr)
     
-    return {'changed': True, 'xml': xmlstr}
+    if vm and params['status'] == 'undefined':
+        if vm.isPersistent():
+            vm.undefine()
+            try:
+                vm.destroy()
+            except libvirt.libvirtError:
+                # occurs if vm was not running on undefine
+                pass
+        else:
+            vm.destroy()
+      
+
+    print(xmlstr)
+    
+    return {'changed': True, 'xml': xmlstr, 'ud':str(1)}
 
 def main():
 
-    module = AnsibleModule(argument_spec=dict(
-        state=dict(choices=['running', 'paused', 'shut-off', 'info'], required=True),
-        status=dict(choices=['defined', 'transient', 'undefined']),
-        persistent=dict(default=True, type='bool'),
-        name=dict(),        
-        uuid=dict(),
-        type=dict(),
-        autostart=dict(type='bool'),
-        title=dict(),
-        memory=dict(),
-        max_memory=dict(),
-        cpus=dict(type='int'),
-        max_cpus=dict(type='int'),
-        uri=dict(),
-        xml=dict(default='<domain></domain>'),
-    ))
+    module = AnsibleModule(
+        argument_spec=dict(
+            state=dict(choices=['running', 'paused', 'shut-off', 'info']),
+            status=dict(choices=['defined', 'transient', 'undefined']),
+            name=dict(),        
+            title=dict(),
+            uuid=dict(),
+            type=dict(),
+            memory=dict(),
+            max_memory=dict(),
+            cpus=dict(type='int'),
+            max_cpus=dict(type='int'),
+            xml=dict(default='<domain></domain>'),
+            hypervisor_uri=dict(),
+            autostart=dict(type='bool'),
+        ),
+        
+    )
 
     result = core(module)
 

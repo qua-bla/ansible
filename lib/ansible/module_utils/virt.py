@@ -82,6 +82,58 @@ class Memory:
         return "{} {}".format(self.size, self.unit)
 
 
+def x_list(element):
+    if type(element) is str:
+        return [element]
+    else:
+        return element
+
+def x_elem(parent, element):
+    element = x_list(element)
+
+    for tag in element:
+        elem = parent.find(tag)
+        if elem is None:
+            elem = etree.SubElement(parent, tag)
+        parent = elem
+        
+    return parent
+
+def x_get(parent, element, type=str):
+    element = x_list(element)
+
+    e = parent.xpath('/'.join(element))
+    
+    if e:
+        e = e[0]
+    else:
+        return None
+    
+    if type == Memory:
+        return Memory(e.text, e.get('unit', 'B'))
+    elif type == object:
+        return e
+    else:
+        return e.text
+
+def x_set(parent, element, value):
+    e = x_elem(parent, element)
+    
+    if isinstance(value, Memory):
+        e.text = str(value.size)
+        e.set('unit', value.unit)
+    else:
+        e.text = str(value)
+    
+    return e
+
+def x_default(parent, element, value):
+    element = x_list(element)
+
+    if not parent.xpath('/'.join(element)):
+        x_set(parent, element, value)
+
+
 class Xml:
     unit_fields = ["capacity", "allocation"]
 
