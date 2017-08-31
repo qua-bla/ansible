@@ -24,6 +24,33 @@ def parse_number(value):
     else:
         return int(size)
 
+class DomainState:
+
+    RUNNING = [
+        libvirt.VIR_DOMAIN_RUNNING,
+        libvirt.VIR_DOMAIN_BLOCKED,
+        libvirt.VIR_DOMAIN_PMSUSPENDED]    
+    PAUSED = [libvirt.VIR_DOMAIN_PAUSED]
+    STOPPING = [libvirt.VIR_DOMAIN_SHUTDOWN]
+    
+    def __init__(self, domain):
+        self.domain = domain
+    
+    def state(self):
+        state, reason = self.domain.state()
+        return state
+    
+    def running(self):
+        return self.state() in self.RUNNING
+
+    def paused(self):
+        return self.state() in self.PAUSED
+    
+    def stopped(self):
+        return self.state() not in self.RUNNING + self.PAUSED + self.STOPPING
+
+    def stopping(self):
+        return self.state() in self.STOPPING
 
 class Memory:
 

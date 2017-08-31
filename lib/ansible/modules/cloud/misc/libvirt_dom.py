@@ -114,6 +114,7 @@ def update_xml(xml, params):
 
     x_default(xml, ['os', 'type'], 'hvm')
 
+
 def core(module):
 
     params = module.params
@@ -134,13 +135,13 @@ def core(module):
             vm = conn.lookupByName(x_get(xml, 'name'))
         except libvirt.libvirtError:
             pass
-    
+
     if not vm:
         if params['status'] == 'defined':
-            conn.defineXML(xmlstr)
+            vm = conn.defineXML(xmlstr)
         elif params['status'] == 'transient':
-            conn.createXML(xmlstr)
-    
+            vm = conn.createXML(xmlstr)
+
     if vm and params['status'] == 'undefined':
         if vm.isPersistent():
             vm.undefine()
@@ -151,7 +152,22 @@ def core(module):
                 pass
         else:
             vm.destroy()
-      
+    
+    if params['state']:
+        state = virt.DomainState(vm)
+        
+        if params['state'] == 'running' and not state.running():
+            if state.stopping():
+                # wait for stopped
+                pass
+            else:
+                vm.create()
+        
+        if params['state'] == 'paused' and not state.paused():
+            if state.stopped():
+                vm.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
+            elif state.running():
+                vm.suspend()
 
     print(xmlstr)
     
