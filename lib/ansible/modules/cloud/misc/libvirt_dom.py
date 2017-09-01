@@ -122,7 +122,8 @@ def core(module):
     xml = etree.fromstring(params['xml'])
     update_xml(xml, params)
     xmlstr = etree.tostring(xml)
-    conn = libvirt.open(params['hypervisor_uri'])
+    
+    conn = virt.connect(params)
 
     vm = None
     if x_get(xml, 'uuid'):
@@ -151,23 +152,37 @@ def core(module):
                 # occurs if vm was not running on undefine
                 pass
         else:
+            stateEvent = virt.ListenDomainStateChange(
+              conn, vm,
+              [libvirt.VIR_DOMAIN_EVENT_STOPPED, libvirt.VIR_DOMAIN_EVENT_CRASHED])
             vm.destroy()
+            stateEvent.await()
     
     if params['state']:
         state = virt.DomainState(vm)
         
         if params['state'] == 'running' and not state.running():
             if state.stopping():
-                # wait for stopped
-                pass
-            else:
-                vm.create()
+                virt.ListenDomainStateChange(
+                  conn, vm,
+                  [libvirt.VIR_DOMAIN_EVENT_STOPPED, libvirt.VIR_DOMAIN_EVENT_CRASHED]
+                  ).await()
+
+            stateEvent = virt.ListenDomainStateChange(
+                conn, vm,
+                [libvirt.VIR_DOMAIN_EVENT_STARTED])
+            vm.create()
+            stateEvent.await()
         
         if params['state'] == 'paused' and not state.paused():
+            stateEvent = virt.ListenDomainStateChange(
+                conn, vm,
+                [libvirt.VIR_DOMAIN_EVENT_SUSPENDED])
             if state.stopped():
                 vm.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
             elif state.running():
                 vm.suspend()
+            stateEvent.await()
 
     print(xmlstr)
     

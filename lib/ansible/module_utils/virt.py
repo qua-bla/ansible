@@ -3,6 +3,7 @@
 
 import re
 import libvirt
+import signal
 from lxml import etree
 
 UNITS_REGEX = re.compile(r"^\s*(\d+)\s*([a-zA-Z]*)\s*$")
@@ -23,6 +24,78 @@ def parse_number(value):
             raise Exception("invalid unit '{}'".format(unit))
     else:
         return int(size)
+
+
+class Connection:
+    init = False
+    timeoutInterval = 200
+    runtime = 0
+    timeout = 1500
+    exception = None
+    stopPolling = False
+
+    @staticmethod
+    def eventPoll():
+        exception = Connection.exception
+        Connection.exception = None
+
+        if exception:
+            raise exception
+
+        libvirt.virEventRunDefaultImpl()
+    
+    @staticmethod
+    def listenEvents():
+        while not Connection.stopPolling:
+            Connection.eventPoll()
+        Connection.stopPolling = False
+
+    @staticmethod
+    def timeoutCallback(timer, opaque):
+        Connection.runtime += Connection.timeoutInterval
+        print(Connection.runtime, Connection.timeout)
+        if Connection.runtime >= Connection.timeout:
+            Connection.runtime = 0
+            Connection.exception = Exception('TIMEOUT')
+
+    @staticmethod
+    def signalHandler(sig_code, frame):
+        Connection.exception = KeyboardInterrupt()
+        raise KeyboardInterrupt()
+
+
+class ListenDomainStateChange:
+    def __init__(self, conn, dom, waitFor):
+        self.waitFor = waitFor
+        self.handle = conn.domainEventRegisterAny(
+                dom,
+                libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                self.callback,
+                None)
+
+    def callback(self, conn, dom, event, detail, opaque):
+        print(event)
+        if event in self.waitFor:
+            Connection.stopPolling = True
+
+    def await(self):
+        Connection.listenEvents()
+
+
+def connect(params):
+    if Connection.init == False:
+        libvirt.virEventRegisterDefaultImpl()
+        libvirt.virEventAddTimeout(
+            Connection.timeoutInterval,
+            Connection.timeoutCallback,
+            None)
+        signal.signal(signal.SIGINT, Connection.signalHandler)
+        Connection.init = True
+
+    conn = libvirt.open(params['hypervisor_uri'])
+
+    return conn
+    
 
 class DomainState:
 
