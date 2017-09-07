@@ -90,8 +90,8 @@ def update_xml(xml, params):
 
     if not params['uuid']:
         # default is to remove uuid
-        for e in xml.xpath('uuid'):
-            xml.remove(e)
+        for elem in xml.xpath('uuid'):
+            xml.remove(elem)
     elif params['uuid'] != 'FROM_XML':
         x_set(xml, 'uuid', params['uuid'])
 
@@ -115,6 +115,8 @@ def update_xml(xml, params):
     x_default(xml, ['os', 'type'], 'hvm')
 
 
+
+
 def core(module):
 
     params = module.params
@@ -122,70 +124,45 @@ def core(module):
     xml = etree.fromstring(params['xml'])
     update_xml(xml, params)
     xmlstr = etree.tostring(xml)
-    
+
     conn = virt.connect(params)
 
-    vm = None
+    dom = None
     if x_get(xml, 'uuid'):
         try:
-            vm = conn.lookupByUUIDString(x_get(xml, 'uuid'))
+            dom = conn.lookupByUUIDString(x_get(xml, 'uuid'))
         except libvirt.libvirtError:
             pass
     elif x_get(xml, 'name'):
         try:
-            vm = conn.lookupByName(x_get(xml, 'name'))
+            dom = conn.lookupByName(x_get(xml, 'name'))
         except libvirt.libvirtError:
             pass
 
-    if not vm:
+    if not dom:
         if params['status'] == 'defined':
-            vm = conn.defineXML(xmlstr)
+            dom = conn.defineXML(xmlstr)
         elif params['status'] == 'transient':
-            vm = conn.createXML(xmlstr)
+            dom = conn.createXML(xmlstr)
 
-    if vm and params['status'] == 'undefined':
-        if vm.isPersistent():
-            vm.undefine()
+    if dom and params['status'] == 'undefined':
+        if dom.isPersistent():
+            dom.undefine()
             try:
-                vm.destroy()
+                dom.destroy()
             except libvirt.libvirtError:
                 # occurs if vm was not running on undefine
                 pass
         else:
-            stateEvent = virt.ListenDomainStateChange(
-              conn, vm,
-              [libvirt.VIR_DOMAIN_EVENT_STOPPED, libvirt.VIR_DOMAIN_EVENT_CRASHED])
-            vm.destroy()
-            stateEvent.await()
-    
-    if params['state']:
-        state = virt.DomainState(vm)
-        
-        if params['state'] == 'running' and not state.running():
-            if state.stopping():
-                virt.ListenDomainStateChange(
-                  conn, vm,
-                  [libvirt.VIR_DOMAIN_EVENT_STOPPED, libvirt.VIR_DOMAIN_EVENT_CRASHED]
-                  ).await()
+            state_off = virt.Domain(dom).listen_state_change('shut-off')
+            dom.destroy()
+            state_off.await()
 
-            stateEvent = virt.ListenDomainStateChange(
-                conn, vm,
-                [libvirt.VIR_DOMAIN_EVENT_STARTED])
-            vm.create()
-            stateEvent.await()
-        
-        if params['state'] == 'paused' and not state.paused():
-            stateEvent = virt.ListenDomainStateChange(
-                conn, vm,
-                [libvirt.VIR_DOMAIN_EVENT_SUSPENDED])
-            if state.stopped():
-                vm.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
-            elif state.running():
-                vm.suspend()
-            stateEvent.await()
+    if params['state']:
+        virt.Domain(dom).ensure_state(params['state'])
 
     print(xmlstr)
-    
+
     return {'changed': True, 'xml': xmlstr, 'ud':str(1)}
 
 def main():
@@ -194,7 +171,7 @@ def main():
         argument_spec=dict(
             state=dict(choices=['running', 'paused', 'shut-off', 'info']),
             status=dict(choices=['defined', 'transient', 'undefined']),
-            name=dict(),        
+            name=dict(),
             title=dict(),
             uuid=dict(),
             type=dict(),
@@ -206,7 +183,7 @@ def main():
             hypervisor_uri=dict(),
             autostart=dict(type='bool'),
         ),
-        
+        supports_check_mode=True
     )
 
     result = core(module)
@@ -215,4 +192,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

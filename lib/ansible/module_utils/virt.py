@@ -2,29 +2,12 @@
 #
 
 import re
-import libvirt
 import signal
+
+import libvirt
 from lxml import etree
 
-UNITS_REGEX = re.compile(r"^\s*(\d+)\s*([a-zA-Z]*)\s*$")
-
-def parse_number(value):
-
-    match = UNITS_REGEX.match(str(value))
-
-    if match is None:
-        raise Exception("invalid size format '{}'".format(value))
-
-    size, unit = match.group(1, 2)
-
-    if unit:
-        try:
-            return int(size) * UNITS_MAP[unit.upper()]
-        except KeyError:
-            raise Exception("invalid unit '{}'".format(unit))
-    else:
-        return int(size)
-
+__metaclass__ = type
 
 class Connection:
     init = False
@@ -34,8 +17,17 @@ class Connection:
     exception = None
     stopPolling = False
 
+    def __init__(self):
+        libvirt.virEventRegisterDefaultImpl()
+        libvirt.virEventAddTimeout(
+            Connection.timeoutInterval,
+            Connection.timeout_callback,
+            None)
+        signal.signal(signal.SIGINT, Connection.signal_handler)
+        Connection.init = True
+
     @staticmethod
-    def eventPoll():
+    def event_poll():
         exception = Connection.exception
         Connection.exception = None
 
@@ -43,15 +35,16 @@ class Connection:
             raise exception
 
         libvirt.virEventRunDefaultImpl()
-    
+
     @staticmethod
-    def listenEvents():
+    def listen_events():
         while not Connection.stopPolling:
-            Connection.eventPoll()
+            Connection.event_poll()
         Connection.stopPolling = False
 
     @staticmethod
-    def timeoutCallback(timer, opaque):
+    def timeout_callback(timer, opaque):
+        # pylint: disable=unused-argument
         Connection.runtime += Connection.timeoutInterval
         print(Connection.runtime, Connection.timeout)
         if Connection.runtime >= Connection.timeout:
@@ -59,71 +52,116 @@ class Connection:
             Connection.exception = Exception('TIMEOUT')
 
     @staticmethod
-    def signalHandler(sig_code, frame):
+    def signal_handler(sig_code, frame):
+        # pylint: disable=unused-argument
         Connection.exception = KeyboardInterrupt()
         raise KeyboardInterrupt()
 
 
-class ListenDomainStateChange:
-    def __init__(self, conn, dom, waitFor):
-        self.waitFor = waitFor
-        self.handle = conn.domainEventRegisterAny(
+def connect(params):
+    if not Connection.init:
+        Connection()
+
+    conn = libvirt.open(params['hypervisor_uri'])
+
+    return conn
+
+
+class ModuleInteraction:
+    def __init__(self, module):
+        self.module = module
+        self.result = {'changed': False}
+
+    def changed(self, changed=True):
+        self.result['changed'] = changed
+
+
+class Domain:
+
+    def __init__(self, domain):
+        self.domain = domain
+        self.conn = domain.connect()
+
+    def ensure_state(self, target_state):
+
+        state = Domain.State(self.domain)
+
+        if target_state == 'running' and not state.running():
+            if state.stopping():
+                self.listen_state_change('shut-off').await()
+
+            state_running = self.listen_state_change('running')
+            self.domain.create()
+            state_running.await()
+
+        if target_state == 'paused' and not state.paused():
+            state_paused = self.listen_state_change('paused')
+            if state.stopped():
+                self.domain.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
+            elif state.running():
+                self.domain.suspend()
+            state_paused.await()
+
+    def listen_state_change(self, wait_for):
+        return Domain.ListenStateChange(self.domain, wait_for)
+
+
+    class ListenStateChange:
+        TARGET_STATE = {
+            'shut-off': [
+                libvirt.VIR_DOMAIN_EVENT_STOPPED,
+                libvirt.VIR_DOMAIN_EVENT_CRASHED],
+            'running': [libvirt.VIR_DOMAIN_EVENT_STARTED],
+            'paused': [libvirt.VIR_DOMAIN_EVENT_SUSPENDED],
+
+        }
+
+        def __init__(self, dom, wait_for):
+            if type(wait_for) is str:
+                self.wait_for = Domain.ListenStateChange.TARGET_STATE[wait_for]
+            else:
+                self.wait_for = wait_for
+
+            self.handle = dom.connect().domainEventRegisterAny(
                 dom,
                 libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
                 self.callback,
                 None)
 
-    def callback(self, conn, dom, event, detail, opaque):
-        print(event)
-        if event in self.waitFor:
-            Connection.stopPolling = True
+        def callback(self, conn, dom, event, detail, opaque):
+            # pylint: disable=unused-argument, too-many-arguments
+            if event in self.wait_for:
+                Connection.stopPolling = True
 
-    def await(self):
-        Connection.listenEvents()
+        def await(self):
+            # pylint: disable=no-self-use
+            Connection.listen_events()
 
 
-def connect(params):
-    if Connection.init == False:
-        libvirt.virEventRegisterDefaultImpl()
-        libvirt.virEventAddTimeout(
-            Connection.timeoutInterval,
-            Connection.timeoutCallback,
-            None)
-        signal.signal(signal.SIGINT, Connection.signalHandler)
-        Connection.init = True
+    class State:
 
-    conn = libvirt.open(params['hypervisor_uri'])
+        RUNNING = [
+            libvirt.VIR_DOMAIN_RUNNING,
+            libvirt.VIR_DOMAIN_BLOCKED,
+            libvirt.VIR_DOMAIN_PMSUSPENDED]
+        PAUSED = [libvirt.VIR_DOMAIN_PAUSED]
+        STOPPING = [libvirt.VIR_DOMAIN_SHUTDOWN]
 
-    return conn
-    
+        def __init__(self, domain):
+            self.state, self.reason = domain.state()
 
-class DomainState:
+        def running(self):
+            return self.state in self.RUNNING
 
-    RUNNING = [
-        libvirt.VIR_DOMAIN_RUNNING,
-        libvirt.VIR_DOMAIN_BLOCKED,
-        libvirt.VIR_DOMAIN_PMSUSPENDED]    
-    PAUSED = [libvirt.VIR_DOMAIN_PAUSED]
-    STOPPING = [libvirt.VIR_DOMAIN_SHUTDOWN]
-    
-    def __init__(self, domain):
-        self.domain = domain
-    
-    def state(self):
-        state, reason = self.domain.state()
-        return state
-    
-    def running(self):
-        return self.state() in self.RUNNING
+        def paused(self):
+            return self.state in self.PAUSED
 
-    def paused(self):
-        return self.state() in self.PAUSED
-    
-    def stopped(self):
-        return self.state() not in self.RUNNING + self.PAUSED + self.STOPPING
+        def stopped(self):
+            return self.state not in self.RUNNING + self.PAUSED + self.STOPPING
 
-    def stopping(self):
-        return self.state() in self.STOPPING
+        def stopping(self):
+            return self.state in self.STOPPING
+
 
 class Memory:
 
@@ -163,12 +201,12 @@ class Memory:
         else:
             self.size = value
             self.unit = unit
-        
+
         self.size = int(self.size)
-        
+
         # trigger error if unit unknown
         self.factor()
-    
+
     def bytes(self):
         return self.size * self.factor()
 
@@ -196,36 +234,36 @@ def x_elem(parent, element):
         if elem is None:
             elem = etree.SubElement(parent, tag)
         parent = elem
-        
+
     return parent
 
-def x_get(parent, element, type=str):
+def x_get(parent, element, typ=str):
     element = x_list(element)
 
-    e = parent.xpath('/'.join(element))
-    
-    if e:
-        e = e[0]
+    elem = parent.xpath('/'.join(element))
+
+    if elem:
+        elem = elem[0]
     else:
         return None
-    
-    if type == Memory:
-        return Memory(e.text, e.get('unit', 'B'))
-    elif type == object:
-        return e
+
+    if typ == Memory:
+        return Memory(elem.text, elem.get('unit', 'B'))
+    elif typ == object:
+        return elem
     else:
-        return e.text
+        return elem.text
 
 def x_set(parent, element, value):
-    e = x_elem(parent, element)
-    
+    elem = x_elem(parent, element)
+
     if isinstance(value, Memory):
-        e.text = str(value.size)
-        e.set('unit', value.unit)
+        elem.text = str(value.size)
+        elem.set('unit', value.unit)
     else:
-        e.text = str(value)
-    
-    return e
+        elem.text = str(value)
+
+    return elem
 
 def x_default(parent, element, value):
     element = x_list(element)
@@ -247,10 +285,11 @@ class Xml:
             if isinstance(value, dict):
                 self.append_data(child, value)
             elif field in self.unit_fields:
-                child.text = str(parse_number(value))
+                mem = Memory(value)
+                child.text = str(mem.size)
+                child.set('unit', mem.unit)
             else:
                 child.text = str(value)
 
     def to_string(self):
         return etree.tostring(self.root, pretty_print=True)
-
