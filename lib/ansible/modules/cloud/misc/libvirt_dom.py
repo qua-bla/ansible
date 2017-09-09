@@ -77,6 +77,7 @@ from ansible.module_utils import virt
 from ansible.module_utils.basic import AnsibleModule
 import libvirt
 from lxml import etree
+import time
 
 from ansible.module_utils.virt import x_set, x_elem, x_default, x_get
 
@@ -119,51 +120,56 @@ def update_xml(xml, params):
 
 def core(module):
 
+    inter = virt.ModuleInteraction(module)
     params = module.params
+    
+    if params['state'] == 'info' and params['status']:
+        raise virt.Error("`state: info` does not allow definition of `status`")
+    
+    if params['status'] == 'undefined' and params['state']:
+        raise virt.Error(
+            "`status: undefined` does not allow definition of `state`")
 
     xml = etree.fromstring(params['xml'])
     update_xml(xml, params)
     xmlstr = etree.tostring(xml)
+    inter.result['xml'] = xmlstr
 
     conn = virt.connect(params)
 
-    dom = None
+    domain = None
     if x_get(xml, 'uuid'):
         try:
-            dom = conn.lookupByUUIDString(x_get(xml, 'uuid'))
+            domain = virt.Domain(conn.lookupByUUIDString(x_get(xml, 'uuid')), inter)
         except libvirt.libvirtError:
             pass
     elif x_get(xml, 'name'):
         try:
-            dom = conn.lookupByName(x_get(xml, 'name'))
+            domain = virt.Domain(conn.lookupByName(x_get(xml, 'name')), inter)
         except libvirt.libvirtError:
             pass
 
-    if not dom:
+    if not domain:
         if params['status'] == 'defined':
-            dom = conn.defineXML(xmlstr)
+            domain = virt.Domain(conn.defineXML(xmlstr), inter)
         elif params['status'] == 'transient':
-            dom = conn.createXML(xmlstr)
+            domain = virt.Domain(conn.createXML(xmlstr), inter)
 
-    if dom and params['status'] == 'undefined':
-        if dom.isPersistent():
-            dom.undefine()
+    if domain and params['status'] == 'undefined':
+        if domain.handle.isPersistent():
+            domain.handle.undefine()
             try:
-                dom.destroy()
+                domain.destroy()
             except libvirt.libvirtError:
                 # occurs if vm was not running on undefine
                 pass
         else:
-            state_off = virt.Domain(dom).listen_state_change('shut-off')
-            dom.destroy()
-            state_off.await()
+            domain.destroy()
 
-    if params['state']:
-        virt.Domain(dom).ensure_state(params['state'])
+    if params['state'] and domain:
+        domain.ensure_state(params['state'])
 
-    print(xmlstr)
-
-    return {'changed': True, 'xml': xmlstr, 'ud':str(1)}
+    return inter
 
 def main():
 
@@ -186,9 +192,14 @@ def main():
         supports_check_mode=True
     )
 
-    result = core(module)
-
-    module.exit_json(**result)
+    try:
+        core(module).exit()
+    except virt.Error as err:
+        if err.inter:
+            err.inter.error = err
+            err.inter.exit()
+        else:
+            module.fail_json(msg=str(err))
 
 if __name__ == '__main__':
     main()

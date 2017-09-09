@@ -13,9 +13,10 @@ class Connection:
     init = False
     timeoutInterval = 200
     runtime = 0
-    timeout = 1500
+    timeout = 3000
     exception = None
     stopPolling = False
+    action = ''
 
     def __init__(self):
         libvirt.virEventRegisterDefaultImpl()
@@ -46,10 +47,9 @@ class Connection:
     def timeout_callback(timer, opaque):
         # pylint: disable=unused-argument
         Connection.runtime += Connection.timeoutInterval
-        print(Connection.runtime, Connection.timeout)
         if Connection.runtime >= Connection.timeout:
             Connection.runtime = 0
-            Connection.exception = Exception('TIMEOUT')
+            Connection.exception = Exception('Timeout: `{}`'.format(Connection.action))
 
     @staticmethod
     def signal_handler(sig_code, frame):
@@ -67,66 +67,120 @@ def connect(params):
     return conn
 
 
+class Error(Exception):
+    def __init__(self, msg, **arg):
+        self.inter = arg.get('inter', None)
+        super(Error, self).__init__(self, msg, **arg)
+
+
 class ModuleInteraction:
     def __init__(self, module):
         self.module = module
+        self.run = not module.check_mode
         self.result = {'changed': False}
+        self.error = None
 
     def changed(self, changed=True):
         self.result['changed'] = changed
 
+    def exit(self):
+        if self.error:
+            self.result['msg'] = str(self.error)
+            self.module.fail_json(**self.result)
+        else:
+            self.module.exit_json(**self.result)
+
 
 class Domain:
 
-    def __init__(self, domain):
+    def __init__(self, domain, inter):
         self.domain = domain
+        self.handle = domain
         self.conn = domain.connect()
+        self.inter = inter
 
     def ensure_state(self, target_state):
 
-        state = Domain.State(self.domain)
+        domain = self.domain
+        inter = self.inter
+        state = Domain.State(domain)
 
         if target_state == 'running' and not state.running():
             if state.stopping():
                 self.listen_state_change('shut-off').await()
-
-            state_running = self.listen_state_change('running')
-            self.domain.create()
-            state_running.await()
+                self.start()
+            elif state.paused():
+                self.resume()
+            else:
+                self.start()
 
         if target_state == 'paused' and not state.paused():
-            state_paused = self.listen_state_change('paused')
             if state.stopped():
-                self.domain.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
+                self.pause(start=True)
             elif state.running():
-                self.domain.suspend()
+                self.pause()
+
+    def destroy(self):
+        self.inter.changed()
+        if self.inter.run:
+            state_shut_off = self.listen_state_change('shut-off')
+            self.handle.destroy()
+            state_shut_off.await()
+
+    def resume(self):
+        self.inter.changed()
+        if self.inter.run:
+            state_shut_off = self.listen_state_change('running')
+            self.handle.resume()
+            state_shut_off.await()
+
+    def pause(self, start=False):
+        self.inter.changed()
+        if self.inter.run:
+            state_paused = self.listen_state_change('paused')
+            if start:
+                self.handle.createWithFlags(libvirt.VIR_DOMAIN_START_PAUSED)
+            else:
+                self.handle.suspend()
             state_paused.await()
 
-    def listen_state_change(self, wait_for):
-        return Domain.ListenStateChange(self.domain, wait_for)
+    def start(self):
+        self.inter.changed()
+        if self.inter.run:
+            state_running = self.listen_state_change('running')
+            self.handle.create()
+            state_running.await()
 
+    def listen_state_change(self, wait_for):
+        return Domain.ListenStateChange(self, wait_for)
 
     class ListenStateChange:
         TARGET_STATE = {
             'shut-off': [
                 libvirt.VIR_DOMAIN_EVENT_STOPPED,
                 libvirt.VIR_DOMAIN_EVENT_CRASHED],
-            'running': [libvirt.VIR_DOMAIN_EVENT_STARTED],
+            'running': [
+                libvirt.VIR_DOMAIN_EVENT_STARTED,
+                libvirt.VIR_DOMAIN_EVENT_RESUMED],
             'paused': [libvirt.VIR_DOMAIN_EVENT_SUSPENDED],
 
         }
 
-        def __init__(self, dom, wait_for):
+        def __init__(self, domain, wait_for):
             if type(wait_for) is str:
                 self.wait_for = Domain.ListenStateChange.TARGET_STATE[wait_for]
             else:
                 self.wait_for = wait_for
 
-            self.handle = dom.connect().domainEventRegisterAny(
-                dom,
-                libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
-                self.callback,
-                None)
+            self.action = "Wait for Domain state '{}'".format(str(wait_for))
+            self.domain = domain
+
+            if self.domain.inter.run:
+                self.handle = domain.conn.domainEventRegisterAny(
+                    domain.domain,
+                    libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                    self.callback,
+                    None)
 
         def callback(self, conn, dom, event, detail, opaque):
             # pylint: disable=unused-argument, too-many-arguments
@@ -134,8 +188,9 @@ class Domain:
                 Connection.stopPolling = True
 
         def await(self):
-            # pylint: disable=no-self-use
-            Connection.listen_events()
+            Connection.action = self.action
+            if self.domain.inter.run:
+                Connection.listen_events()
 
 
     class State:
