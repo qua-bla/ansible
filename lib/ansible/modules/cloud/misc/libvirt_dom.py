@@ -5,9 +5,7 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 
-ANSIBLE_METADATA = {'metadata_version': '1.0',
-                    'status': ['preview'],
-                    'supported_by': 'community'}
+ANSIBLE_METADATA = {'metadata_version': '1.1'}
 
 
 DOCUMENTATION = '''
@@ -15,57 +13,70 @@ DOCUMENTATION = '''
 module: libvirt_dom
 short_description: Manages virtual machines supported by libvirt
 description:
-     - Manages virtual machines supported by I(libvirt).
-version_added: "0.2"
+  - Manages domains (virtual machines or containers) through I(libvirt).
+  - All available domain properties can be defined via libvirt's XML format.
+  - Some options like the number of CPUs can be specified as module options. If settings are specified via module options, they take precedence over the XML options.
+  - Options that are available als domain options are also adjsuted on running domains.
+  - If the I(xml) argument is given and the I(status) option is set to I(defined), atomic updates are not supported. An existing domain definition will be completely overwritten.
+version_added: 2.4
 options:
-  name:
-    description:
-      - name of the guest VM being managed. Note that VM must be previously
-        defined with xml.
-    required: true
-    default: null
-    aliases: []
-  state:
-    description:
-      - Note that there may be some lag for state requests like C(shutdown)
-        since these refer only to VM states. After starting a guest, it may not
-        be immediately accessible.
-    required: false
-    choices: [ "running", "shutdown", "destroyed", "paused" ]
-    default: "no"
-  command:
-    description:
-      - in addition to state management, various non-idempotent commands are available. See examples
-    required: false
-    choices: ["create","status", "start", "stop", "pause", "unpause",
-              "shutdown", "undefine", "destroy", "get_xml",
-              "freemem", "list_vms", "info", "nodeinfo", "virttype", "define"]
   autostart:
-    description:
-      - start VM at host startup
-    choices: [True, False]
-    version_added: "2.3"
-    default: null
-  uri:
-    description:
-      - libvirt connection uri
-    required: false
-    default: qemu:///system
+    description: Autostart
+    type: bool
+  cpus:
+    description: CPUs
+    type: int
+  cpus_max:
+    description: Max. CPUs
+    type: int
+  hypervisor_uri:
+    description: Hypervisor URI
+  memory:
+    description: Memory
+  memory_max:
+    description: Max. Memory
+  name:
+    description: Name
+  state:
+    description: State
+    choices: ['running', 'paused', 'shut-off', 'info']
+  status:
+    description: Status
+    choices: ['defined', 'transient', 'undefined']
+  timeout:
+    description: |
+      Time in seconds until operations like starting a domain are considered
+      failed.
+    default: 120
+    type: int
+  title:
+    description: Title
+  type:
+    description: Type
+  uuid:
+    description: UUID
   xml:
-    description:
-      - XML document used with the define command
-    required: false
-    default: null
+    description: XML
+    default: '<domain></domain>'
 requirements:
-    - "python >= 2.6"
-    - "libvirt-python"
+    - python >= 2.6
+    - python-libvirt
+    - python-lxml
+notes:
+  - '**OPEN QUESTIONS**'
+  - Should domains be renamed if uuid and name is given and the name differs?
+  - '**NOTES**'
+  - A task might include more then one operation that can timeout. Therefore, the total runtime of task can be a multiple of the timeout.
 author:
-    - "Ansible Core Team"
-    - "Michael DeHaan"
-    - "Seth Vidal"
+  - Sophie Herold (@sophie-h)
 '''
 
 EXAMPLES = '''
+- name: ensure that vm1 is started
+  libvirt_dom:
+    name: vm1
+    state: running
+
 
 '''
 
@@ -74,7 +85,7 @@ RETURN = '''
 '''
 
 from ansible.module_utils import virt
-from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.basic import AnsibleModule, env_fallback
 import libvirt
 from lxml import etree
 import time
@@ -89,11 +100,7 @@ def update_xml(xml, params):
     if params['title']:
         x_set(xml, 'title', params['title'])
 
-    if not params['uuid']:
-        # default is to remove uuid
-        for elem in xml.xpath('uuid'):
-            xml.remove(elem)
-    elif params['uuid'] != 'FROM_XML':
+    if params['uuid']:
         x_set(xml, 'uuid', params['uuid'])
 
     if params['type']:
@@ -102,30 +109,42 @@ def update_xml(xml, params):
     if params['memory']:
         x_set(xml, 'currentMemory', virt.Memory(params['memory']))
 
-    if params['max_memory']:
-        x_set(xml, 'memory', virt.Memory(params['max_memory']))
+    if params['memory_max']:
+        x_set(xml, 'memory', virt.Memory(params['memory_max']))
 
     if params['cpus']:
         # libvirt errors if vcpu.text (i.e. max. cpus) is missing
         x_default(xml, 'vcpu', params['cpus'])
         x_elem(xml, 'vcpu').set('current', str(params['cpus']))
 
-    if params['max_cpus']:
-        x_set(xml, 'vcpu', params['max_cpus'])
+    if params['cpus_max']:
+        x_set(xml, 'vcpu', params['cpus_max'])
 
     x_default(xml, ['os', 'type'], 'hvm')
 
 
-
+def get_domain(xml, conn, inter):
+    if x_get(xml, 'uuid'):
+        try:
+            return virt.Domain(conn.lookupByUUIDString(x_get(xml, 'uuid')), inter)
+        except libvirt.libvirtError:
+            return None
+    elif x_get(xml, 'name'):
+        try:
+            return virt.Domain(conn.lookupByName(x_get(xml, 'name')), inter)
+        except libvirt.libvirtError:
+            return None
+    else:
+        raise virt.Error('Either `name` or `uuid` must be specified.')
 
 def core(module):
 
     inter = virt.ModuleInteraction(module)
     params = module.params
-    
+
     if params['state'] == 'info' and params['status']:
         raise virt.Error("`state: info` does not allow definition of `status`")
-    
+
     if params['status'] == 'undefined' and params['state']:
         raise virt.Error(
             "`status: undefined` does not allow definition of `state`")
@@ -137,59 +156,49 @@ def core(module):
 
     conn = virt.connect(params)
 
-    domain = None
-    if x_get(xml, 'uuid'):
-        try:
-            domain = virt.Domain(conn.lookupByUUIDString(x_get(xml, 'uuid')), inter)
-        except libvirt.libvirtError:
-            pass
-    elif x_get(xml, 'name'):
-        try:
-            domain = virt.Domain(conn.lookupByName(x_get(xml, 'name')), inter)
-        except libvirt.libvirtError:
-            pass
+    domain = get_domain(xml, conn, inter)
 
     if not domain:
         if params['status'] == 'defined':
             domain = virt.Domain(conn.defineXML(xmlstr), inter)
         elif params['status'] == 'transient':
             domain = virt.Domain(conn.createXML(xmlstr), inter)
-
-    if domain and params['status'] == 'undefined':
-        if domain.handle.isPersistent():
+    else:
+        if params['status'] == 'transient' and domain.handle.isPersistent():
             domain.handle.undefine()
-            try:
-                domain.destroy()
-            except libvirt.libvirtError:
-                # occurs if vm was not running on undefine
-                pass
-        else:
-            domain.destroy()
+        if params['status'] == 'defined' and not domain.handle.isPersistent():
+            conn.defineXML(xmlstr)
+        elif params['status'] == 'undefined':
+            domain.undefine()
 
-    if params['state'] and domain:
+    if params['state']:
         domain.ensure_state(params['state'])
 
     return inter
 
 def main():
-
     module = AnsibleModule(
         argument_spec=dict(
+            autostart=dict(type='bool'),
+            cpus=dict(type='int'),
+            cpus_max=dict(type='int'),
+            hypervisor_uri=dict(),
+            memory=dict(),
+            memory_max=dict(),
+            name=dict(),
             state=dict(choices=['running', 'paused', 'shut-off', 'info']),
             status=dict(choices=['defined', 'transient', 'undefined']),
-            name=dict(),
+            timeout=dict(
+                default=120,
+                type='int',
+                fallback=(env_fallback, ['ANSIBLE_LIBVIRT_TIMEOUT'])),
             title=dict(),
-            uuid=dict(),
             type=dict(),
-            memory=dict(),
-            max_memory=dict(),
-            cpus=dict(type='int'),
-            max_cpus=dict(type='int'),
+            uuid=dict(),
             xml=dict(default='<domain></domain>'),
-            hypervisor_uri=dict(),
-            autostart=dict(type='bool'),
         ),
-        supports_check_mode=True
+        required_one_of=[['name', 'uuid', 'xml']],
+        supports_check_mode=True,
     )
 
     try:

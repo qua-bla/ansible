@@ -120,6 +120,17 @@ class Domain:
             elif state.running():
                 self.pause()
 
+    def undefine(self):
+        if self.handle.isPersistent():
+            self.handle.undefine()
+            try:
+                self.destroy()
+            except libvirt.libvirtError:
+                # occurs if vm was not running on undefine
+                pass
+        else:
+            self.destroy()
+            
     def destroy(self):
         self.inter.changed()
         if self.inter.run:
