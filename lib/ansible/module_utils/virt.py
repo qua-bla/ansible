@@ -77,11 +77,15 @@ class ModuleInteraction:
     def __init__(self, module):
         self.module = module
         self.run = not module.check_mode
-        self.result = {'changed': False}
+        self.result = {'changed': False, 'changes': ''}
         self.error = None
 
-    def changed(self, changed=True):
-        self.result['changed'] = changed
+    def changed(self, what=None):
+        self.result['changed'] = True
+        if what:
+            if self.result['changes']:
+                self.result['changes'] += ', '
+            self.result['changes'] += what
 
     def exit(self):
         if self.error:
@@ -89,6 +93,18 @@ class ModuleInteraction:
             self.module.fail_json(**self.result)
         else:
             self.module.exit_json(**self.result)
+
+
+class DomainXml:
+    
+    def __init__(self, xmlString):
+        self.xml = etree.fromstring(xmlString)
+    
+    def get_memory(self):
+        return x_get(self.xml, 'currentMemory', Memory)
+        
+    def set_memory(self, memory):
+        x_set(xml, 'currentMemory', memory)
 
 
 class Domain:
@@ -99,11 +115,33 @@ class Domain:
         self.conn = domain.connect()
         self.inter = inter
 
-    def ensure_state(self, target_state):
+    def adjust_atomic(self, target, what):
+        if what == 'config':
+            fetchFlags = libvirt.VIR_DOMAIN_XML_INACTIVE
+            setFlags = libvirt.VIR_DOMAIN_AFFECT_CONFIG
+        elif what == 'live':
+            fetchFlags = 0
+            setFlags = libvirt.VIR_DOMAIN_AFFECT_LIVE
+    
+        current = DomainXml(self.handle.XMLDesc(fetchFlags))
+        
+        if target.get_memory() and target.get_memory() != current.get_memory():
+            self.handle.setMemoryFlags(
+                target.get_memory().kbytes(),
+                setFlags | libvirt.VIR_DOMAIN_MEM_MAXIMUM)
+            self.inter.changed('max_memory')
+            
+        if target.get_memory() and target.get_memory() != current.get_memory():
+            self.handle.setMemoryFlags(target.get_memory().kbytes(), setFlags)
+            self.inter.changed('memory')
 
+    def state(self):
+        return Domain.State(self.domain)
+
+    def ensure_state(self, target_state):
         domain = self.domain
         inter = self.inter
-        state = Domain.State(domain)
+        state = self.state()
 
         if target_state == 'running' and not state.running():
             if state.stopping():
@@ -119,6 +157,9 @@ class Domain:
                 self.pause(start=True)
             elif state.running():
                 self.pause()
+        
+        if target_state == 'shut-off' and not state.stopped():
+            self.destroy()
 
     def undefine(self):
         if self.handle.isPersistent():
@@ -132,21 +173,21 @@ class Domain:
             self.destroy()
             
     def destroy(self):
-        self.inter.changed()
+        self.inter.changed('state->destroyed')
         if self.inter.run:
             state_shut_off = self.listen_state_change('shut-off')
             self.handle.destroy()
             state_shut_off.await()
 
     def resume(self):
-        self.inter.changed()
+        self.inter.changed('state->running')
         if self.inter.run:
             state_shut_off = self.listen_state_change('running')
             self.handle.resume()
             state_shut_off.await()
 
     def pause(self, start=False):
-        self.inter.changed()
+        self.inter.changed('state->paused')
         if self.inter.run:
             state_paused = self.listen_state_change('paused')
             if start:
@@ -156,7 +197,7 @@ class Domain:
             state_paused.await()
 
     def start(self):
-        self.inter.changed()
+        self.inter.changed('state->running')
         if self.inter.run:
             state_running = self.listen_state_change('running')
             self.handle.create()
@@ -261,7 +302,7 @@ class Memory:
         if unit is None:
             match = self.REGEX.match(str(value))
             if match is None:
-                raise Exception("invalid size format '{}'".format(value))
+                raise Error("invalid size format '{}'".format(value))
             self.size, self.unit = match.group(1, 2)
 
         else:
@@ -273,14 +314,27 @@ class Memory:
         # trigger error if unit unknown
         self.factor()
 
+    def __cmp__(self, other):
+        diff = self.bytes() - other.bytes()
+    
+        if diff < 1024 and diff > -1024:
+            return 0
+        elif diff < 0:
+            return -1
+        else:
+            return 1
+
     def bytes(self):
         return self.size * self.factor()
+
+    def kbytes(self):
+        return self.size * self.factor() / self.UNITS_MAP['KIB']
 
     def factor(self):
         try:
             return self.UNITS_MAP[self.unit.upper()]
         except KeyError:
-            raise Exception("invalid unit '{}'".format(self.unit))
+            raise Error("invalid unit '{}'".format(self.unit))
 
     def tostring(self):
         return "{} {}".format(self.size, self.unit)

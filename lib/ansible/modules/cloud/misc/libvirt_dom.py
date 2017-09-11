@@ -152,6 +152,7 @@ def core(module):
     xml = etree.fromstring(params['xml'])
     update_xml(xml, params)
     xmlstr = etree.tostring(xml)
+    xmlobj = virt.DomainXml(xmlstr)
     inter.result['xml'] = xmlstr
 
     conn = virt.connect(params)
@@ -170,15 +171,36 @@ def core(module):
             conn.defineXML(xmlstr)
         elif params['status'] == 'undefined':
             domain.undefine()
+            domain = None
 
     if params['state']:
         domain.ensure_state(params['state'])
+        inter.result['off']= 'off'
+
+    if domain and params['status']:
+        if params['affect'] == 'live':
+            if not domain.state().running():
+                raise virt.Error("Domain must be running to apply live changes")
+            else:
+                domain.adjust_atomic(xmlobj, 'live')
+        
+        if params['affect'] == 'config':
+            domain.adjust_atomic(xmlobj, 'config')
+            
+        if params['affect'] == 'applicable':
+            if domain.handle.isPersistent():
+                domain.adjust_atomic(xmlobj, 'config')
+            if domain.state().running():
+                domain.adjust_atomic(xmlobj, 'live')
 
     return inter
 
 def main():
     module = AnsibleModule(
         argument_spec=dict(
+            affect=dict(
+                default='applicable',
+                choices=['applicable', 'config', 'live']),
             autostart=dict(type='bool'),
             cpus=dict(type='int'),
             cpus_max=dict(type='int'),
