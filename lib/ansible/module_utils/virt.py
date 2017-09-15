@@ -6,6 +6,7 @@ import signal
 
 import libvirt
 from lxml import etree
+import syslog
 
 __metaclass__ = type
 
@@ -17,6 +18,7 @@ class Connection:
     exception = None
     stopPolling = False
     action = ''
+    on_deregister = None
 
     def __init__(self):
         libvirt.virEventRegisterDefaultImpl()
@@ -41,15 +43,23 @@ class Connection:
     def listen_events():
         while not Connection.stopPolling:
             Connection.event_poll()
+        Connection.deregister()
         Connection.stopPolling = False
+
+    @staticmethod
+    def deregister():
+        Connection.runtime = 0
+        Connection.on_deregister(None)
+        Connection.on_deregister = None
 
     @staticmethod
     def timeout_callback(timer, opaque):
         # pylint: disable=unused-argument
+        syslog.syslog('timeout_callback {} {}'.format(Connection.runtime, Connection.timeout))
         Connection.runtime += Connection.timeoutInterval
         if Connection.runtime >= Connection.timeout:
-            Connection.runtime = 0
-            Connection.exception = Exception('Timeout: `{}`'.format(Connection.action))
+            Connection.deregister()
+            Connection.exception = Timeout('Timeout: `{}`'.format(Connection.action))
 
     @staticmethod
     def signal_handler(sig_code, frame):
@@ -70,8 +80,12 @@ def connect(params):
 class Error(Exception):
     def __init__(self, msg, **arg):
         self.inter = arg.get('inter', None)
+        self.msg = msg
         super(Error, self).__init__(self, msg, **arg)
 
+
+class Timeout(Error):
+    pass
 
 class ModuleInteraction:
     def __init__(self, module):
@@ -96,15 +110,43 @@ class ModuleInteraction:
 
 
 class DomainXml:
-    
-    def __init__(self, xmlString):
-        self.xml = etree.fromstring(xmlString)
-    
+
+    def __init__(self, xml_string):
+        self.xml = etree.fromstring(xml_string)
+
+    def get_cpus(self):
+        cpus = x_elem(self.xml, 'vcpu').get('current')
+        if cpus is None:
+            return None
+        else:
+            return int(cpus)
+
+    def set_cpus(self, cpus):
+        x_elem(self.xml, 'vcpu').set('current', str(cpus))
+
+    def get_cpus_max(self):
+        return x_get(self.xml, 'vcpu', int)
+
+    def set_cpus_max(self, cpus, default=False):
+        if default:
+            x_default(self.xml, 'vcpu', cpus)
+        else:
+            x_set(self.xml, 'vcpu', cpus)
+
     def get_memory(self):
         return x_get(self.xml, 'currentMemory', Memory)
-        
+
     def set_memory(self, memory):
-        x_set(xml, 'currentMemory', memory)
+        x_set(self.xml, 'currentMemory', memory)
+
+    def get_memory_max(self):
+        return x_get(self.xml, 'memory', Memory)
+
+    def set_memory_max(self, memory, default=False):
+        if default:
+            x_default(self.xml, 'memory', memory)
+        else:
+            x_set(self.xml, 'memory', memory)
 
 
 class Domain:
@@ -117,30 +159,48 @@ class Domain:
 
     def adjust_atomic(self, target, what):
         if what == 'config':
-            fetchFlags = libvirt.VIR_DOMAIN_XML_INACTIVE
-            setFlags = libvirt.VIR_DOMAIN_AFFECT_CONFIG
+            fetch_flags = libvirt.VIR_DOMAIN_XML_INACTIVE
+            set_flags = libvirt.VIR_DOMAIN_AFFECT_CONFIG
         elif what == 'live':
-            fetchFlags = 0
-            setFlags = libvirt.VIR_DOMAIN_AFFECT_LIVE
-    
-        current = DomainXml(self.handle.XMLDesc(fetchFlags))
-        
-        if target.get_memory() and target.get_memory() != current.get_memory():
-            self.handle.setMemoryFlags(
-                target.get_memory().kbytes(),
-                setFlags | libvirt.VIR_DOMAIN_MEM_MAXIMUM)
-            self.inter.changed('max_memory')
-            
-        if target.get_memory() and target.get_memory() != current.get_memory():
-            self.handle.setMemoryFlags(target.get_memory().kbytes(), setFlags)
+            fetch_flags = 0
+            set_flags = libvirt.VIR_DOMAIN_AFFECT_LIVE
+
+        current = DomainXml(self.handle.XMLDesc(fetch_flags))
+
+        def changed(fun):
+            return fun(target) and fun(target) != fun(current)
+
+        if changed(DomainXml.get_cpus):
+            self.inter.changed('cpus')
+            if self.inter.run:
+                self.handle.setVcpusFlags(target.get_cpus(), set_flags)
+
+        if changed(DomainXml.get_cpus_max):
+            self.inter.changed('cpus_max')
+            if self.inter.run:
+                self.handle.setVcpusFlags(
+                    target.get_cpus_max(),
+                    set_flags | libvirt.VIR_DOMAIN_VCPU_MAXIMUM)
+
+        if changed(DomainXml.get_memory):
             self.inter.changed('memory')
+            if self.inter.run:
+                self.handle.setMemoryFlags(
+                    target.get_memory().kbytes(),
+                    set_flags)
+
+        if changed(DomainXml.get_memory_max):
+            self.inter.changed('memory_max')
+            if self.inter.run:
+                self.handle.setMemoryFlags(
+                    target.get_memory_max().kbytes(),
+                    set_flags | libvirt.VIR_DOMAIN_MEM_MAXIMUM)
+
 
     def state(self):
         return Domain.State(self.domain)
 
     def ensure_state(self, target_state):
-        domain = self.domain
-        inter = self.inter
         state = self.state()
 
         if target_state == 'running' and not state.running():
@@ -157,13 +217,18 @@ class Domain:
                 self.pause(start=True)
             elif state.running():
                 self.pause()
-        
-        if target_state == 'shut-off' and not state.stopped():
-            self.destroy()
 
-    def undefine(self):
+        if target_state == 'shut-off' and not state.stopped():
+            if state.paused():
+                self.resume()
+            try:
+                self.shutdown()
+            except Timeout as timeout:
+                self.destroy()
+
+    def undefine_full(self):
         if self.handle.isPersistent():
-            self.handle.undefine()
+            self.undefine()
             try:
                 self.destroy()
             except libvirt.libvirtError:
@@ -171,7 +236,21 @@ class Domain:
                 pass
         else:
             self.destroy()
-            
+
+    def undefine(self):
+        self.inter.changed('undefine')
+        if self.inter.run:
+            state_undefined = self.listen_state_change('undefined')
+            self.handle.undefine()
+            state_undefined.await()
+
+    def shutdown(self):
+        self.inter.changed('state->shutdown')
+        if self.inter.run:
+            state_shut_off = self.listen_state_change('shut-off')
+            self.handle.shutdown()
+            state_shut_off.await()
+
     def destroy(self):
         self.inter.changed('state->destroyed')
         if self.inter.run:
@@ -215,7 +294,7 @@ class Domain:
                 libvirt.VIR_DOMAIN_EVENT_STARTED,
                 libvirt.VIR_DOMAIN_EVENT_RESUMED],
             'paused': [libvirt.VIR_DOMAIN_EVENT_SUSPENDED],
-
+            'undefined': [libvirt.VIR_DOMAIN_EVENT_UNDEFINED],
         }
 
         def __init__(self, domain, wait_for):
@@ -224,7 +303,7 @@ class Domain:
             else:
                 self.wait_for = wait_for
 
-            self.action = "Wait for Domain state '{}'".format(str(wait_for))
+            self.action = "Waiting for Domain state '{}'".format(str(wait_for))
             self.domain = domain
 
             if self.domain.inter.run:
@@ -233,6 +312,12 @@ class Domain:
                     libvirt.VIR_DOMAIN_EVENT_ID_LIFECYCLE,
                     self.callback,
                     None)
+
+                Connection.on_deregister = staticmethod(
+                    lambda _:
+                    self.domain.conn.domainEventDeregisterAny(self.handle)
+                    )
+
 
         def callback(self, conn, dom, event, detail, opaque):
             # pylint: disable=unused-argument, too-many-arguments
@@ -316,7 +401,7 @@ class Memory:
 
     def __cmp__(self, other):
         diff = self.bytes() - other.bytes()
-    
+
         if diff < 1024 and diff > -1024:
             return 0
         elif diff < 0:
@@ -369,6 +454,11 @@ def x_get(parent, element, typ=str):
 
     if typ == Memory:
         return Memory(elem.text, elem.get('unit', 'B'))
+    if typ == int:
+        if elem.text is None:
+            return None
+        else:
+            return int(elem.text)
     elif typ == object:
         return elem
     else:
@@ -390,26 +480,3 @@ def x_default(parent, element, value):
 
     if not parent.xpath('/'.join(element)):
         x_set(parent, element, value)
-
-
-class Xml:
-    unit_fields = ["capacity", "allocation"]
-
-    def __init__(self, root_name, data):
-        self.root = etree.Element(root_name)
-        self.append_data(self.root, data)
-
-    def append_data(self, node, data):
-        for field, value in data.items():
-            child = etree.SubElement(node, field)
-            if isinstance(value, dict):
-                self.append_data(child, value)
-            elif field in self.unit_fields:
-                mem = Memory(value)
-                child.text = str(mem.size)
-                child.set('unit', mem.unit)
-            else:
-                child.text = str(value)
-
-    def to_string(self):
-        return etree.tostring(self.root, pretty_print=True)

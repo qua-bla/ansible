@@ -24,15 +24,15 @@ options:
     description: Autostart
     type: bool
   cpus:
-    description: CPUs
+    description: Current number of CPUs
     type: int
   cpus_max:
-    description: Max. CPUs
+    description: Maximum number of CPUs
     type: int
   hypervisor_uri:
     description: Hypervisor URI
   memory:
-    description: Memory
+    description: Current amount of memory
   memory_max:
     description: Max. Memory
   name:
@@ -52,7 +52,7 @@ options:
   title:
     description: Title
   type:
-    description: Type
+    description: Virtualization type (KVM etc.)
   uuid:
     description: UUID
   xml:
@@ -76,8 +76,16 @@ EXAMPLES = '''
   libvirt_dom:
     name: vm1
     state: running
-
-
+- name: provision running vm
+  libvirt_dom:
+    name: vm2
+    title: KVM Machine 2
+    state: running
+    status: defined
+    affect: config
+    cpus: 2
+    memory: 100 MB
+    type: kvm
 '''
 
 RETURN = '''
@@ -86,53 +94,55 @@ RETURN = '''
 
 from ansible.module_utils import virt
 from ansible.module_utils.basic import AnsibleModule, env_fallback
-import libvirt
+from libvirt import libvirtError
 from lxml import etree
 import time
 
 from ansible.module_utils.virt import x_set, x_elem, x_default, x_get
 
-def update_xml(xml, params):
+def update_xml(domxml, params):
 
     if params['name']:
-        x_set(xml, 'name', params['name'])
+        x_set(domxml.xml, 'name', params['name'])
 
     if params['title']:
-        x_set(xml, 'title', params['title'])
+        x_set(domxml.xml, 'title', params['title'])
 
     if params['uuid']:
-        x_set(xml, 'uuid', params['uuid'])
+        x_set(domxml.xml, 'uuid', params['uuid'])
 
     if params['type']:
-        xml.set('type', params['type'])
+        domxml.xml.set('type', params['type'])
 
     if params['memory']:
-        x_set(xml, 'currentMemory', virt.Memory(params['memory']))
+        # libvirt errors if max. memory is missing
+        domxml.set_memory_max(virt.Memory(params['memory']), default=True)
+        domxml.set_memory(virt.Memory(params['memory']))
 
     if params['memory_max']:
-        x_set(xml, 'memory', virt.Memory(params['memory_max']))
+        domxml.set_memory_max(virt.Memory(params['memory_max']))
 
     if params['cpus']:
-        # libvirt errors if vcpu.text (i.e. max. cpus) is missing
-        x_default(xml, 'vcpu', params['cpus'])
-        x_elem(xml, 'vcpu').set('current', str(params['cpus']))
+        # libvirt errors if max. CPUs is missing
+        domxml.set_cpus_max(params['cpus'], default=True)
+        domxml.set_cpus(params['cpus'])
 
     if params['cpus_max']:
-        x_set(xml, 'vcpu', params['cpus_max'])
+        domxml.set_cpus_max(params['cpus_max'])
 
-    x_default(xml, ['os', 'type'], 'hvm')
+    x_default(domxml.xml, ['os', 'type'], 'hvm')
 
 
 def get_domain(xml, conn, inter):
     if x_get(xml, 'uuid'):
         try:
             return virt.Domain(conn.lookupByUUIDString(x_get(xml, 'uuid')), inter)
-        except libvirt.libvirtError:
+        except libvirtError:
             return None
     elif x_get(xml, 'name'):
         try:
             return virt.Domain(conn.lookupByName(x_get(xml, 'name')), inter)
-        except libvirt.libvirtError:
+        except libvirtError:
             return None
     else:
         raise virt.Error('Either `name` or `uuid` must be specified.')
@@ -149,33 +159,37 @@ def core(module):
         raise virt.Error(
             "`status: undefined` does not allow definition of `state`")
 
-    xml = etree.fromstring(params['xml'])
-    update_xml(xml, params)
-    xmlstr = etree.tostring(xml)
-    xmlobj = virt.DomainXml(xmlstr)
+    if params['timeout']:
+        virt.Connection.timeout = params['timeout']*1000
+
+    xmlobj = virt.DomainXml(params['xml'])
+    update_xml(xmlobj, params)
+    xmlstr = etree.tostring(xmlobj.xml)
     inter.result['xml'] = xmlstr
 
     conn = virt.connect(params)
 
-    domain = get_domain(xml, conn, inter)
+    domain = get_domain(xmlobj.xml, conn, inter)
 
     if not domain:
         if params['status'] == 'defined':
+            # TODO: checkmode
             domain = virt.Domain(conn.defineXML(xmlstr), inter)
         elif params['status'] == 'transient':
+            # TODO: checkmode
             domain = virt.Domain(conn.createXML(xmlstr), inter)
     else:
         if params['status'] == 'transient' and domain.handle.isPersistent():
             domain.handle.undefine()
         if params['status'] == 'defined' and not domain.handle.isPersistent():
+            # TODO: checkmode
             conn.defineXML(xmlstr)
         elif params['status'] == 'undefined':
-            domain.undefine()
+            domain.undefine_full()
             domain = None
 
     if params['state']:
         domain.ensure_state(params['state'])
-        inter.result['off']= 'off'
 
     if domain and params['status']:
         if params['affect'] == 'live':
@@ -183,10 +197,10 @@ def core(module):
                 raise virt.Error("Domain must be running to apply live changes")
             else:
                 domain.adjust_atomic(xmlobj, 'live')
-        
+
         if params['affect'] == 'config':
             domain.adjust_atomic(xmlobj, 'config')
-            
+
         if params['affect'] == 'applicable':
             if domain.handle.isPersistent():
                 domain.adjust_atomic(xmlobj, 'config')
@@ -230,7 +244,7 @@ def main():
             err.inter.error = err
             err.inter.exit()
         else:
-            module.fail_json(msg=str(err))
+            module.fail_json(msg=err.msg)
 
 if __name__ == '__main__':
     main()
