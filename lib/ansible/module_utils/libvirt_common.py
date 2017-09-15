@@ -223,7 +223,8 @@ class Domain:
                 self.resume()
             try:
                 self.shutdown()
-            except Timeout as timeout:
+            except Timeout:
+                # TODO: Only destroy if wnated
                 self.destroy()
 
     def undefine_full(self):

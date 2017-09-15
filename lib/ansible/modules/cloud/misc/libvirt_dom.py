@@ -92,13 +92,11 @@ RETURN = '''
 
 '''
 
-from ansible.module_utils import virt
 from ansible.module_utils.basic import AnsibleModule, env_fallback
+from ansible.module_utils import libvirt_common as virt
+from ansible.module_utils.libvirt_common import x_set, x_default, x_get
 from libvirt import libvirtError
 from lxml import etree
-import time
-
-from ansible.module_utils.virt import x_set, x_elem, x_default, x_get
 
 def update_xml(domxml, params):
 
