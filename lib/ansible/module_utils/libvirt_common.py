@@ -148,6 +148,15 @@ class DomainXml:
         else:
             x_set(self.xml, 'memory', memory)
 
+    def get_name(self):
+        return x_get(self.xml, 'name')
+
+    def get_uuid(self):
+        return x_get(self.xml, 'uuid')
+
+    def tostring(self):
+        return etree.tostring(self.xml)
+
 
 class Domain:
 
@@ -224,7 +233,7 @@ class Domain:
             try:
                 self.shutdown()
             except Timeout:
-                # TODO: Only destroy if wnated
+                # TODO: Only destroy if wanted
                 self.destroy()
 
     def undefine_full(self):
@@ -481,3 +490,57 @@ def x_default(parent, element, value):
 
     if not parent.xpath('/'.join(element)):
         x_set(parent, element, value)
+
+
+def attach_dict_to_xml(xml_node, value):
+    if type(value) is dict:
+        for elem_name in value:
+            if elem_name == '--':
+                xml_node.text = str(value[elem_name])
+            elif elem_name[:1] == '-':
+                xml_node.set(elem_name[1:], str(value[elem_name]))
+            else:
+                new_elem = etree.SubElement(xml_node, elem_name)
+                attach_dict_to_xml(new_elem, value[elem_name])
+    elif type(value) is list:
+        for elem in value:
+            attach_dict_to_xml(xml_node, elem)
+    elif value is None:
+        pass
+    else:
+        xml_node.text = str(value)
+
+
+def xml_to_dict(xml):
+    if not len(xml) and not xml.items():
+        return xml.text
+    else:
+        tags = {}
+        tag_doubled = False
+        for elem in xml:
+            if tags.get(elem.tag, False):
+                tag_doubled = True
+                break
+            else:
+                tags[elem.tag] = True
+
+        if tag_doubled:
+            result = []
+            def _attach(result, key, value):
+                result.append({key: value})
+        else:
+            result = {}
+            def _attach(result, key, value):
+                result[key] = value
+
+        if xml.text is not None:
+            _attach(result, '--', xml.text)
+
+        for name, value in sorted(xml.items()):
+            _attach(result, '-' + name, value)
+
+        for elem in xml:
+            _attach(result, elem.tag, xml_to_dict(elem))
+
+        return result
+

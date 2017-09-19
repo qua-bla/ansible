@@ -94,12 +94,11 @@ RETURN = '''
 
 from ansible.module_utils.basic import AnsibleModule, env_fallback
 from ansible.module_utils import libvirt_common as virt
-from ansible.module_utils.libvirt_common import x_set, x_default, x_get
+from ansible.module_utils.libvirt_common import x_set, x_default, x_elem
 from libvirt import libvirtError
 from lxml import etree
 
 def update_xml(domxml, params):
-
     if params['name']:
         x_set(domxml.xml, 'name', params['name'])
 
@@ -130,16 +129,47 @@ def update_xml(domxml, params):
 
     x_default(domxml.xml, ['os', 'type'], 'hvm')
 
+    if params['disks']:
+        devices = x_elem(domxml.xml, 'devices')
+        for disk in params['disks']:
+            disk_elem = etree.SubElement(devices, 'disk')
+            virt.attach_dict_to_xml(disk_elem, disk)
+
+
+def ensure_status(conn, domain, xml, target_status, inter):
+    if not domain:
+        if target_status == 'defined':
+            inter.changed('defined')
+            if inter.run:
+                return virt.Domain(conn.defineXML(xml.tostring()), inter)
+        elif target_status == 'transient':
+            inter.changed('created')
+            if inter.run:
+                return virt.Domain(conn.createXML(xml.tostring()), inter)
+    else:
+        if target_status == 'transient' and domain.handle.isPersistent():
+            inter.changed('undefined')
+            if inter.run:
+                domain.handle.undefine()
+        if target_status == 'defined' and not domain.handle.isPersistent():
+            inter.changed('defined')
+            if inter.run:
+                conn.defineXML(xml.tostring())
+        elif target_status == 'undefined':
+            domain.undefine_full()
+            return None
+
+    return domain
 
 def get_domain(xml, conn, inter):
-    if x_get(xml, 'uuid'):
+    if xml.get_uuid():
         try:
-            return virt.Domain(conn.lookupByUUIDString(x_get(xml, 'uuid')), inter)
+            return virt.Domain(conn.lookupByUUIDString(xml.get_uuid()), inter)
         except libvirtError:
             return None
-    elif x_get(xml, 'name'):
+    elif xml.get_name():
         try:
-            return virt.Domain(conn.lookupByName(x_get(xml, 'name')), inter)
+            return virt.Domain(conn.lookupByName(xml.get_name()), inter)
         except libvirtError:
             return None
     else:
@@ -160,33 +190,18 @@ def core(module):
     if params['timeout']:
         virt.Connection.timeout = params['timeout']*1000
 
-    xmlobj = virt.DomainXml(params['xml'])
-    update_xml(xmlobj, params)
-    xmlstr = etree.tostring(xmlobj.xml)
-    inter.result['xml'] = xmlstr
+    xml = virt.DomainXml(params['xml'])
+    update_xml(xml, params)
+
+    inter.result['xml'] = xml.tostring()
+    inter.result['xml_dict'] = virt.xml_to_dict(xml.xml)
 
     conn = virt.connect(params)
 
-    domain = get_domain(xmlobj.xml, conn, inter)
+    domain = get_domain(xml, conn, inter)
+    domain = ensure_status(conn, domain, xml, params['status'], inter)
 
-    if not domain:
-        if params['status'] == 'defined':
-            # TODO: checkmode
-            domain = virt.Domain(conn.defineXML(xmlstr), inter)
-        elif params['status'] == 'transient':
-            # TODO: checkmode
-            domain = virt.Domain(conn.createXML(xmlstr), inter)
-    else:
-        if params['status'] == 'transient' and domain.handle.isPersistent():
-            domain.handle.undefine()
-        if params['status'] == 'defined' and not domain.handle.isPersistent():
-            # TODO: checkmode
-            conn.defineXML(xmlstr)
-        elif params['status'] == 'undefined':
-            domain.undefine_full()
-            domain = None
-
-    if params['state']:
+    if params['state'] and (domain or inter.run):
         domain.ensure_state(params['state'])
 
     if domain and params['status']:
@@ -194,16 +209,18 @@ def core(module):
             if not domain.state().running():
                 raise virt.Error("Domain must be running to apply live changes")
             else:
-                domain.adjust_atomic(xmlobj, 'live')
+                domain.adjust_atomic(xml, 'live')
 
         if params['affect'] == 'config':
-            domain.adjust_atomic(xmlobj, 'config')
+            domain.adjust_atomic(xml, 'config')
 
         if params['affect'] == 'applicable':
             if domain.handle.isPersistent():
-                domain.adjust_atomic(xmlobj, 'config')
+                domain.adjust_atomic(xml, 'config')
             if domain.state().running():
-                domain.adjust_atomic(xmlobj, 'live')
+                domain.adjust_atomic(xml, 'live')
+
+
 
     return inter
 
@@ -229,6 +246,7 @@ def main():
             title=dict(),
             type=dict(),
             uuid=dict(),
+            disks=dict(type='list'),
             xml=dict(default='<domain></domain>'),
         ),
         required_one_of=[['name', 'uuid', 'xml']],
